@@ -1,4 +1,5 @@
 import time
+import traceback
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Security, Depends, status
@@ -159,7 +160,8 @@ def embed_batch(request: EmbedRequest):
 
     except Exception as e:
         print(f"[ERROR] Exception during /embed processing: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

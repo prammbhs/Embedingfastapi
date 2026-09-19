@@ -1,5 +1,6 @@
 import json
 import time
+import traceback
 from typing import List
 from concurrent.futures import ThreadPoolExecutor
 import boto3
@@ -51,7 +52,6 @@ class BedrockTitanEmbeddingManager:
         """
         Invoke Bedrock Titan Text Embeddings V2 for a single text chunk.
         """
-        # Ensure utf-8 text input
         clean_text = text if isinstance(text, str) else str(text)
         if not clean_text.strip():
             clean_text = " "
@@ -79,8 +79,8 @@ class BedrockTitanEmbeddingManager:
             return embedding
 
         except (BotoCoreError, ClientError) as e:
-            print(f"[ERROR] AWS Bedrock API invocation failed: {e}")
-            raise RuntimeError(f"Bedrock invocation error: {e}") from e
+            print(f"[ERROR] AWS Bedrock API invocation failed ({type(e).__name__}): {e}")
+            raise RuntimeError(f"Bedrock ({type(e).__name__}): {e}") from e
 
     def encode_texts(self, texts: List[str]) -> List[List[float]]:
         """
