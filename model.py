@@ -1,52 +1,88 @@
+import json
 import time
 from typing import List
-import torch
-from sentence_transformers import SentenceTransformer
-from server.config import MODEL_NAME, DEVICE, GPU_BATCH_SIZE
+from concurrent.futures import ThreadPoolExecutor
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
-class EmbeddingModelManager:
+from server.config import (
+    AWS_REGION,
+    BEDROCK_MODEL_ID,
+    EMBEDDING_DIMENSIONS,
+    NORMALIZE_EMBEDDINGS,
+    BEDROCK_MAX_WORKERS,
+)
+
+class BedrockTitanEmbeddingManager:
     _instance = None
 
     def __init__(self):
-        print(f"[INIT] Loading embedding model '{MODEL_NAME}' on device '{DEVICE}'...")
+        print(f"[INIT] Initializing AWS Bedrock runtime client in region '{AWS_REGION}'...")
+        print(f"[INIT] Target Model: '{BEDROCK_MODEL_ID}' ({EMBEDDING_DIMENSIONS} dims)")
         start_t = time.time()
-        self.device = DEVICE
-        self.gpu_batch_size = GPU_BATCH_SIZE
         
-        # SentenceTransformer loads BAAI/bge-m3
-        self.model = SentenceTransformer(MODEL_NAME, device=self.device)
+        self.region = AWS_REGION
+        self.model_id = BEDROCK_MODEL_ID
+        self.dimensions = EMBEDDING_DIMENSIONS
+        self.normalize = NORMALIZE_EMBEDDINGS
+        self.max_workers = BEDROCK_MAX_WORKERS
+
+        # Initialize boto3 Bedrock Runtime Client
+        self.client = boto3.client("bedrock-runtime", region_name=self.region)
         elapsed = time.time() - start_t
-        print(f"[INIT] Model successfully loaded in {elapsed:.2f}s on {self.device}.")
+        print(f"[INIT] Bedrock client initialized successfully in {elapsed:.2f}s.")
 
     @classmethod
-    def get_instance(cls) -> "EmbeddingModelManager":
+    def get_instance(cls) -> "BedrockTitanEmbeddingManager":
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
+    def _embed_single_text(self, text: str) -> List[float]:
+        """
+        Invoke Bedrock Titan Text Embeddings V2 for a single text chunk.
+        """
+        # Ensure utf-8 text input
+        clean_text = text if isinstance(text, str) else str(text)
+        if not clean_text.strip():
+            clean_text = " "
+
+        native_request = {
+            "inputText": clean_text,
+            "dimensions": self.dimensions,
+            "normalize": self.normalize,
+        }
+
+        try:
+            response = self.client.invoke_model(
+                modelId=self.model_id,
+                contentType="application/json",
+                accept="application/json",
+                body=json.dumps(native_request),
+            )
+            response_body = json.loads(response["body"].read().decode("utf-8"))
+            embedding = response_body.get("embedding", [])
+            
+            if len(embedding) != self.dimensions:
+                raise ValueError(
+                    f"Expected embedding dimension {self.dimensions}, got {len(embedding)}"
+                )
+            return embedding
+
+        except (BotoCoreError, ClientError) as e:
+            print(f"[ERROR] AWS Bedrock API invocation failed: {e}")
+            raise RuntimeError(f"Bedrock invocation error: {e}") from e
+
     def encode_texts(self, texts: List[str]) -> List[List[float]]:
         """
-        Encode a list of text strings into 1024-dim embeddings using BGE-M3.
+        Concurrently encode a batch of texts using a ThreadPoolExecutor.
+        Preserves original input ordering.
         """
         if not texts:
             return []
 
-        # Sanitize text input to valid utf-8 strings
-        clean_texts = [
-            t if isinstance(t, str) else str(t)
-            for t in texts
-        ]
+        # Execute concurrent calls via threadpool for batch speed
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            embeddings = list(executor.map(self._embed_single_text, texts))
 
-        embeddings = self.model.encode(
-            clean_texts,
-            batch_size=self.gpu_batch_size,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-            convert_to_numpy=True
-        )
-
-        dim = embeddings.shape[1] if len(embeddings.shape) > 1 else 0
-        if dim != 1024:
-            raise ValueError(f"Expected embedding dimension 1024 from BGE-M3, but got {dim}")
-
-        return embeddings.tolist()
+        return embeddings
