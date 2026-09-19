@@ -1,3 +1,4 @@
+import os
 import time
 from typing import List
 import voyageai
@@ -33,16 +34,41 @@ class VoyageEmbeddingManager:
         self.dimensions = EMBEDDING_DIMENSIONS
         self.max_token_limit = MAX_TOKEN_LIMIT
         self.total_tokens_used = 0
+        self.current_api_key = None
+        self.client = None
 
-        self.client = voyageai.Client(api_key=VOYAGE_API_KEY if VOYAGE_API_KEY else None)
-        elapsed = time.time() - start_t
-        print(f"[INIT] Voyage AI client initialized successfully in {elapsed:.2f}s.")
+        api_key = self._get_api_key(raise_if_missing=False)
+        if api_key:
+            self.current_api_key = api_key
+            self.client = voyageai.Client(api_key=api_key)
+            elapsed = time.time() - start_t
+            print(f"[INIT] Voyage AI client initialized successfully in {elapsed:.2f}s.")
+        else:
+            print("[WARN] VOYAGE_API_KEY is not set yet. It will be required when processing /embed requests.")
 
     @classmethod
     def get_instance(cls) -> "VoyageEmbeddingManager":
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
+
+    def _get_api_key(self, raise_if_missing: bool = True) -> str:
+        key = os.getenv("VOYAGE_API_KEY") or VOYAGE_API_KEY
+        if key and key.strip():
+            return key.strip()
+        if raise_if_missing:
+            raise RuntimeError(
+                "VOYAGE_API_KEY is missing on the server! "
+                "Please set it on your EC2 instance: export VOYAGE_API_KEY=\"pa-...\" "
+                "or add VOYAGE_API_KEY=\"pa-...\" into your server/.env file and restart the server."
+            )
+        return ""
+
+    def _ensure_client(self):
+        active_key = self._get_api_key(raise_if_missing=True)
+        if self.client is None or self.current_api_key != active_key:
+            self.current_api_key = active_key
+            self.client = voyageai.Client(api_key=active_key)
 
     def encode_texts(self, texts: List[str]) -> List[List[float]]:
         """
@@ -57,6 +83,8 @@ class VoyageEmbeddingManager:
                 f"Token limit reached! ({self.total_tokens_used:,} / {self.max_token_limit:,} tokens used). "
                 f"Please update VOYAGE_API_KEY in the server configuration to continue."
             )
+
+        self._ensure_client()
 
         clean_texts = [
             t if (isinstance(t, str) and t.strip()) else " "
@@ -89,9 +117,10 @@ class VoyageEmbeddingManager:
             return result.embeddings
 
         except Exception as e:
-            if "Token limit reached" in str(e):
+            if "Token limit reached" in str(e) or "VOYAGE_API_KEY is missing" in str(e):
                 raise
             print(f"[ERROR] Voyage AI API invocation failed ({type(e).__name__}): {e}")
             raise RuntimeError(f"VoyageAI ({type(e).__name__}): {e}") from e
+
 
 
