@@ -1,6 +1,7 @@
 import os
 import sys
 import sqlite3
+import threading
 import faulthandler
 import chromadb
 from chromadb.config import Settings
@@ -15,9 +16,11 @@ except ImportError:
 
 class ChromaDBManager:
     _instance = None
+    _lock = threading.Lock()
 
     def __init__(self, chroma_path: str = CHROMA_PATH):
         self.chroma_path = os.path.abspath(chroma_path)
+        self.db_write_lock = threading.Lock()
         print(f"[DIAGNOSTIC] Python Version: {sys.version}")
         print(f"[DIAGNOSTIC] SQLite3 Version: {sqlite3.sqlite_version}")
         print(f"[DIAGNOSTIC] Target Chroma Path: '{self.chroma_path}'")
@@ -55,7 +58,11 @@ class ChromaDBManager:
                 name=col_name,
                 metadata={"hnsw:space": "cosine"}
             )
-            print(f"[INIT] ChromaDB collection '{col_name}' ready (count: {self.collections[col_name].count()})")
+            try:
+                cnt = self.collections[col_name].count()
+                print(f"[INIT] ChromaDB collection '{col_name}' ready (count: {cnt})")
+            except Exception as e:
+                print(f"[WARN] Could not retrieve count for collection '{col_name}': {e}")
 
     @classmethod
     def get_instance(cls) -> "ChromaDBManager":
@@ -101,14 +108,19 @@ class ChromaDBManager:
                     clean_m[k] = str(v)
             sanitized_metadatas.append(clean_m)
 
-        col.upsert(
-            ids=ids,
-            documents=documents,
-            embeddings=embeddings,
-            metadatas=sanitized_metadatas,
-        )
+        with self.db_write_lock:
+            col.upsert(
+                ids=ids,
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=sanitized_metadatas,
+            )
         return len(ids)
 
     def get_collection_count(self, collection_name: str) -> int:
-        col = self._get_collection(collection_name)
-        return col.count()
+        try:
+            col = self._get_collection(collection_name)
+            return col.count()
+        except Exception as e:
+            print(f"[WARN] Error getting count for {collection_name}: {e}")
+            return 0
