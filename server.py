@@ -1,5 +1,9 @@
 import time
 import traceback
+import faulthandler
+
+faulthandler.enable()
+
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Security, Depends, status
